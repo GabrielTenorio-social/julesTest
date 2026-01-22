@@ -3,10 +3,15 @@ import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { User } from './entities/user.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 
 @Injectable()
 export class UserService {
-  private users: User[] = [];
+  constructor(
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+  ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
     if (!createUserDto.password) {
@@ -18,20 +23,19 @@ export class UserService {
     const salt = await bcrypt.genSalt();
     const hashedPassword = await bcrypt.hash(createUserDto.password, salt);
     const { password, ...rest } = createUserDto;
-    const user = new User({
+    const user = this.userRepository.create({
       ...rest,
       password: hashedPassword,
     });
-    this.users.push(user);
-    return user;
+    return this.userRepository.save(user);
   }
 
-  findAll(): User[] {
-    return this.users;
+  findAll(): Promise<User[]> {
+    return this.userRepository.find();
   }
 
-  findOne(id: string): User {
-    const user = this.users.find((user) => user.id === id);
+  async findOne(id: string): Promise<User> {
+    const user = await this.userRepository.findOne({ where: { id } });
     if (!user) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
     }
@@ -39,8 +43,7 @@ export class UserService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
-    const user = this.findOne(id);
-    const userIndex = this.users.findIndex((user) => user.id === id);
+    const user = await this.findOne(id);
 
     let hashedPassword = user.password;
     if (updateUserDto.password) {
@@ -48,20 +51,19 @@ export class UserService {
       hashedPassword = await bcrypt.hash(updateUserDto.password, salt);
     }
 
-    const updatedUser = new User({
+    const updatedUser = {
       ...user,
       ...updateUserDto,
       password: hashedPassword,
-    });
-    this.users[userIndex] = updatedUser;
-    return updatedUser;
+    };
+    await this.userRepository.update(id, updatedUser);
+    return this.findOne(id);
   }
 
-  remove(id: string): void {
-    const userIndex = this.users.findIndex((user) => user.id === id);
-    if (userIndex === -1) {
+  async remove(id: string): Promise<void> {
+    const result = await this.userRepository.delete(id);
+    if (result.affected === 0) {
       throw new HttpException('User not found', HttpStatus.NOT_FOUND);
     }
-    this.users.splice(userIndex, 1);
   }
 }

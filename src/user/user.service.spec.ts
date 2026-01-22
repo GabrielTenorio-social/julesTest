@@ -1,8 +1,11 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
+import { Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { User } from './entities/user.entity';
 import { Role } from './enums/role.enum';
 import { UserService } from './user.service';
 
@@ -10,13 +13,31 @@ jest.mock('bcrypt');
 
 describe('UserService', () => {
   let service: UserService;
+  let repository: Repository<User>;
+
+  const mockUserRepository = {
+    create: jest.fn(),
+    save: jest.fn(),
+    find: jest.fn(),
+    findOne: jest.fn(),
+    update: jest.fn(),
+    delete: jest.fn(),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [UserService],
+      providers: [
+        UserService,
+        {
+          provide: getRepositoryToken(User),
+          useValue: mockUserRepository,
+        },
+      ],
     }).compile();
 
     service = module.get<UserService>(UserService);
+    repository = module.get<Repository<User>>(getRepositoryToken(User));
+    jest.clearAllMocks();
   });
 
   it('should be defined', () => {
@@ -32,110 +53,96 @@ describe('UserService', () => {
         password: 'password',
         role: Role.ANALYST,
       };
-
-      const salt = 'salt';
       const hashedPassword = 'hashedPassword';
+      const user = new User({ ...createUserDto, password: hashedPassword });
 
-      (bcrypt.genSalt as jest.Mock).mockResolvedValue(salt);
+      (bcrypt.genSalt as jest.Mock).mockResolvedValue('salt');
       (bcrypt.hash as jest.Mock).mockResolvedValue(hashedPassword);
+      mockUserRepository.create.mockReturnValue(user);
+      mockUserRepository.save.mockResolvedValue(user);
 
-      const user = await service.create(createUserDto);
+      const result = await service.create(createUserDto);
 
-      expect(user).toBeDefined();
-      expect(user.name).toEqual(createUserDto.name);
-      expect(user.lastName).toEqual(createUserDto.lastName);
-      expect(user.birthdate).toEqual(createUserDto.birthdate);
-      expect(user.password).toEqual(hashedPassword);
-      expect(user.role).toEqual(createUserDto.role);
-
-      const users = service.findAll();
-      expect(users).toHaveLength(1);
-      expect(users[0]).toEqual(user);
+      expect(result).toEqual(user);
+      expect(bcrypt.hash).toHaveBeenCalledWith('password', 'salt');
+      expect(mockUserRepository.create).toHaveBeenCalledWith({
+        ...createUserDto,
+        password: hashedPassword,
+      });
+      expect(mockUserRepository.save).toHaveBeenCalledWith(user);
     });
   });
 
   describe('update', () => {
     it('should update a user', async () => {
-      const createUserDto: CreateUserDto = {
+      const userId = 'some-id';
+      const updateUserDto: UpdateUserDto = {
+        name: 'Jane',
+        password: 'newPassword',
+      };
+      const existingUser = new User({
+        id: userId,
         name: 'John',
         lastName: 'Doe',
         birthdate: new Date('1990-01-01'),
         password: 'password',
         role: Role.ANALYST,
-      };
-      const user = await service.create(createUserDto);
-
-      const updateUserDto: UpdateUserDto = {
-        name: 'Jane',
-        password: 'newPassword',
-      };
-
-      const salt = 'newSalt';
+      });
       const hashedPassword = 'newHashedPassword';
+      const updatedUser = { ...existingUser, ...updateUserDto, password: hashedPassword };
 
-      (bcrypt.genSalt as jest.Mock).mockResolvedValue(salt);
+      mockUserRepository.findOne.mockResolvedValueOnce(existingUser);
+      (bcrypt.genSalt as jest.Mock).mockResolvedValue('newSalt');
       (bcrypt.hash as jest.Mock).mockResolvedValue(hashedPassword);
+      mockUserRepository.update.mockResolvedValue(undefined);
+      mockUserRepository.findOne.mockResolvedValueOnce(updatedUser);
 
-      const updatedUser = await service.update(user.id, updateUserDto);
 
-      expect(updatedUser).toBeDefined();
-      expect(updatedUser.name).toEqual(updateUserDto.name);
-      expect(updatedUser.password).toEqual(hashedPassword);
+      const result = await service.update(userId, updateUserDto);
+
+      expect(result.name).toEqual(updateUserDto.name);
+      expect(result.password).toEqual(hashedPassword);
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({ where: { id: userId } });
     });
   });
 
   describe('findOne', () => {
     it('should return a user if found', async () => {
-      const createUserDto: CreateUserDto = {
-        name: 'John',
-        lastName: 'Doe',
-        birthdate: new Date('1990-01-01'),
-        password: 'password',
-        role: Role.ANALYST,
-      };
-      const user = await service.create(createUserDto);
+      const userId = 'some-id';
+      const user = new User({ id: userId, name: 'John', lastName: 'Doe', birthdate: new Date() });
+      mockUserRepository.findOne.mockResolvedValue(user);
 
-      const foundUser = service.findOne(user.id);
+      const result = await service.findOne(userId);
 
-      expect(foundUser).toEqual(user);
+      expect(result).toEqual(user);
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({ where: { id: userId } });
     });
 
-    it('should throw an error if user is not found', () => {
-      try {
-        service.findOne('non-existent-id');
-      } catch (error) {
-        expect(error).toBeInstanceOf(HttpException);
-        expect(error.message).toEqual('User not found');
-        expect(error.getStatus()).toEqual(HttpStatus.NOT_FOUND);
-      }
+    it('should throw an error if user is not found', async () => {
+      mockUserRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.findOne('non-existent-id')).rejects.toThrow(
+        new HttpException('User not found', HttpStatus.NOT_FOUND),
+      );
     });
   });
 
   describe('remove', () => {
     it('should remove a user', async () => {
-      const createUserDto: CreateUserDto = {
-        name: 'John',
-        lastName: 'Doe',
-        birthdate: new Date('1990-01-01'),
-        password: 'password',
-        role: Role.ANALYST,
-      };
-      const user = await service.create(createUserDto);
+      const userId = 'some-id';
+      mockUserRepository.delete.mockResolvedValue({ affected: 1 });
 
-      service.remove(user.id);
+      await service.remove(userId);
 
-      const users = service.findAll();
-      expect(users).toHaveLength(0);
+      expect(mockUserRepository.delete).toHaveBeenCalledWith(userId);
     });
 
-    it('should throw an error if user to remove is not found', () => {
-      try {
-        service.remove('non-existent-id');
-      } catch (error) {
-        expect(error).toBeInstanceOf(HttpException);
-        expect(error.message).toEqual('User not found');
-        expect(error.getStatus()).toEqual(HttpStatus.NOT_FOUND);
-      }
+    it('should throw an error if user to remove is not found', async () => {
+      mockUserRepository.delete.mockResolvedValue({ affected: 0 });
+
+      await expect(service.remove('non-existent-id')).rejects.toThrow(
+        new HttpException('User not found', HttpStatus.NOT_FOUND),
+      );
     });
   });
 });
